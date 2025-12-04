@@ -1,0 +1,98 @@
+[
+  {
+    "rule_id": "COV-STAT-001",
+    "condition": "policy.status != 'Active'",
+    "outcome": "Reject",
+    "reason": "Policy not active at incident time",
+    "severity": "Critical"
+  },
+  {
+    "rule_id": "COV-STAT-002",
+    "condition": "incident.date < policy.start_date OR incident.date > policy.end_date",
+    "outcome": "Reject",
+    "reason": "Incident date outside policy period",
+    "severity": "Critical"
+  },
+  {
+    "rule_id": "COV-OD-001",
+    "condition": "policy.coverage_type IN ['OD', 'COMP']",
+    "covers": ["OwnDamage"],
+    "notes": "Own damage claims can be considered if no exclusion applies."
+  },
+  {
+    "rule_id": "COV-OD-002",
+    "condition": "policy.coverage_type NOT IN ['OD', 'COMP']",
+    "outcome": "NoOwnDamageCoverage",
+    "reason": "Own damage not covered by policy."
+  },
+  {
+    "rule_id": "COV-TPL-001",
+    "condition": "policy.coverage_type IN ['TPL', 'COMP']",
+    "covers": ["ThirdPartyLiability"],
+    "notes": "Third-party liability is available for covered incidents."
+  },
+  {
+    "rule_id": "COV-TPL-002",
+    "condition": "incident.third_party_involved != true",
+    "outcome": "TPLNotApplicable",
+    "reason": "No third party involvement indicated."
+  },
+  {
+    "rule_id": "COV-FT-001",
+    "condition": "policy.coverage_type IN ['FT', 'COMP']",
+    "covers": ["Fire", "Theft", "NaturalPeril"],
+    "doc_required": ["documents.police_report_present"],
+    "notes": "Fire, theft and certain natural perils may be covered."
+  },
+  {
+    "rule_id": "COV-GLASS-001",
+    "condition": "policy.coverage_type == 'GC' OR 'GlassCover' IN policy.addons",
+    "covers": ["Glass"],
+    "notes": "Glass-only damages may be covered under glass cover rules."
+  },
+  {
+    "rule_id": "COV-EXC-001",
+    "condition": "driver.alcohol_level > LegalLimit",
+    "outcome": "Reject",
+    "reason": "Driver above legal alcohol limit.",
+    "severity": "Critical"
+  },
+  {
+    "rule_id": "COV-EXC-002",
+    "condition": "driver.license_status != 'Valid'",
+    "outcome": "RejectOwnDamage",
+    "reason": "Unauthorised or invalid driver.",
+    "severity": "High"
+  },
+  {
+    "rule_id": "COV-EXC-003",
+    "condition": "vehicle.use_type != policy.usage",
+    "outcome": "RejectOwnDamage",
+    "reason": "Vehicle used in a way not permitted by policy (e.g., commercial use under private policy).",
+    "severity": "High"
+  },
+  {
+    "rule_id": "COV-EXC-004",
+    "condition": "incident.intentional_damage == true",
+    "outcome": "Reject",
+    "reason": "Intentional or deliberate damage.",
+    "severity": "Critical"
+  },
+  {
+    "rule_id": "COV-ADD-ZD-001",
+    "condition": "'ZeroDep' IN policy.addons",
+    "effect": "RemoveDepreciationOnParts",
+    "notes": "Zero depreciation add-on removes or reduces part depreciation."
+  },
+  {
+    "rule_id": "COV-ADD-TOW-001",
+    "condition": "'Towing' IN policy.addons",
+    "covers": ["TowingCharges"]
+  },
+  {
+    "rule_id": "COV-ADD-ENG-001",
+    "condition": "'EngineProtect' IN policy.addons AND incident.type == 'Flood'",
+    "covers": ["EngineWaterIngressDamage"],
+    "notes": "Engine protect add-on may cover engine damage caused by water ingress from flood."
+  }
+]

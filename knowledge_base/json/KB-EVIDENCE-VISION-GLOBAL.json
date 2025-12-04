@@ -1,0 +1,114 @@
+[
+  {
+    "rule_id": "IMG-REQ-001",
+    "rule": "FNOL must include at least 6 distinct images of the vehicle.",
+    "check": "documents.photos_count >= 6",
+    "outcome_if_failed": "RequestAdditionalImages",
+    "severity": "High"
+  },
+  {
+    "rule_id": "IMG-REQ-002",
+    "rule": "At least one image should show overall view of the front or rear.",
+    "required_tags": [
+      "Overall_View"
+    ],
+    "outcome_if_failed": "RequestOverviewImages",
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "IMG-REQ-003",
+    "rule": "At least one close-up of main damage is required.",
+    "required_tags": [
+      "Damage_Closeup"
+    ],
+    "outcome_if_failed": "RequestDamageCloseups",
+    "severity": "High"
+  },
+  {
+    "rule_id": "IMG-REQ-004",
+    "rule": "At least one image should show the license plate clearly when possible.",
+    "required_tags": [
+      "LicensePlate"
+    ],
+    "outcome_if_failed": "RequestLicensePlateImage",
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "VISION-TASK-001",
+    "task_name": "Detect_Damaged_Parts",
+    "instruction": "Run damage detection on all vehicle images and return parts with bounding boxes, damage types, and severity.",
+    "expected_output_schema": {
+      "parts": [
+        {
+          "part_id": "string",
+          "part_name": "string",
+          "damage_type": "string",
+          "severity": "Minor|Moderate|Severe"
+        }
+      ]
+    }
+  },
+  {
+    "rule_id": "VISION-TASK-002",
+    "task_name": "Extract_Identification_Visuals",
+    "instruction": "Detect and OCR license plate, VIN label, and odometer when visible.",
+    "expected_output_schema": {
+      "license_plate_text": "string|null",
+      "vin_text": "string|null",
+      "odometer_reading": "number|null"
+    }
+  },
+  {
+    "rule_id": "IMG-CONS-001",
+    "if": "incident.impact_point == 'Rear'",
+    "expected_parts": [
+      "Rear_Bumper",
+      "Trunk",
+      "Tail_Lights",
+      "Rear_Quarter_Panels"
+    ],
+    "check": "INTERSECT(expected_parts, cv_results.damaged_parts.part_name) NOT EMPTY",
+    "outcome_if_failed": "FlagInconsistency",
+    "reason": "Damage not consistent with reported rear impact."
+  },
+  {
+    "rule_id": "IMG-CONS-002",
+    "if": "incident.type == 'GlassOnly'",
+    "check": "ALL(cv_results.damaged_parts.part_name IN ['Windshield', 'Side_Windows', 'Rear_Window'])",
+    "outcome_if_failed": "FlagInconsistency",
+    "reason": "Non-glass damage detected for glass-only incident."
+  },
+  {
+    "rule_id": "META-001",
+    "if": "image.metadata.capture_date is not null AND incident.date is not null AND DAYS(image.metadata.capture_date - incident.date) > 7",
+    "signal": "Suspicious",
+    "reason": "Image captured significantly later than incident date.",
+    "action": "ContributeToFraudScore"
+  },
+  {
+    "rule_id": "META-002",
+    "if": "image.metadata.gps_location is not null AND incident.location is not null AND DISTANCE(image.metadata.gps_location, incident.location) is large",
+    "signal": "Suspicious",
+    "reason": "Image capture location far from declared incident location.",
+    "action": "ContributeToFraudScore"
+  },
+  {
+    "rule_id": "META-003",
+    "if": "all images have stripped metadata",
+    "signal": "WeakSuspicious",
+    "reason": "All EXIF removed. Weak indicator only.",
+    "action": "WeakFraudSignal"
+  },
+  {
+    "rule_id": "IMG-PRE-001",
+    "signal": "PreexistingDamage",
+    "pattern": "Rust or signs of older repairs around claimed fresh damage.",
+    "action": "FlagPreexistingDamage"
+  },
+  {
+    "rule_id": "IMG-PRE-002",
+    "signal": "MultipleUnrelatedDamages",
+    "pattern": "Damage clusters on different sides of the vehicle not explained by single incident.",
+    "action": "SuggestPartialCoverageAndReview"
+  }
+]

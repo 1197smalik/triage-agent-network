@@ -1,0 +1,73 @@
+[
+  {
+    "rule_id": "SOP-001",
+    "rule": "FNOL must be submitted by an authorized workshop through its registered email address.",
+    "required_fields": ["workshop.id", "workshop.email"],
+    "severity": "High"
+  },
+  {
+    "rule_id": "SOP-002",
+    "rule": "Each FNOL email should correspond to a single vehicle and a single incident.",
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "SOP-003",
+    "rule": "The system must extract structured FNOL data from email body and attachments.",
+    "dependencies": ["email_parser", "attachment_handler"],
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "SOP-004",
+    "rule": "FNOL must include at least basic incident information: incident date, brief description, and vehicle identifier (policy number or registration number).",
+    "required_fields": ["incident.date", "incident.description", "vehicle.registration_number"],
+    "severity": "High"
+  },
+  {
+    "rule_id": "SOP-005",
+    "rule": "If minimal incident information is missing, set claim status to Review and request clarification from workshop.",
+    "outcome_if_failed": "Review",
+    "response_type": "FollowUpRequest",
+    "severity": "High"
+  },
+  {
+    "rule_id": "SOP-006",
+    "rule": "FNOL must include or link to at least 6 distinct vehicle images.",
+    "check": "documents.photos_count >= 6",
+    "outcome_if_failed": "RequestAdditionalImages",
+    "severity": "High"
+  },
+  {
+    "rule_id": "SOP-007",
+    "rule": "An estimate document should be present for repairable damage claims.",
+    "condition": "incident.type IN ['Collision', 'Vandalism', 'GlassOnly', 'Other']",
+    "check": "documents.estimate_present == true",
+    "outcome_if_failed": "RequestEstimate",
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "SOP-008",
+    "rule": "The system must generate a claim_reference_id for each valid FNOL.",
+    "output": "claim_reference_id",
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "SOP-009",
+    "rule": "The system must send an acknowledgment to the workshop after FNOL ingestion.",
+    "output": "fnol_acknowledgement",
+    "severity": "Medium"
+  },
+  {
+    "rule_id": "SOP-010",
+    "rule": "If incident type suggests legal involvement (theft, severe third-party injury), a police report should be requested if not already present.",
+    "condition": "incident.type IN ['Theft', 'Collision'] AND incident.third_party_involved == true",
+    "check": "documents.police_report_present == true",
+    "outcome_if_failed": "RequestPoliceReport",
+    "severity": "High"
+  },
+  {
+    "rule_id": "SOP-011",
+    "rule": "Escalation should be used when there is a combination of missing critical data and severe inconsistencies in the FNOL.",
+    "outcome": "Review",
+    "severity": "High"
+  }
+]

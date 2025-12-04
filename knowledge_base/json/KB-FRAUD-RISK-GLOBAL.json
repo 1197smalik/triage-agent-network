@@ -1,0 +1,58 @@
+[
+  {
+    "rule_id": "FRD-001",
+    "if": "IMG-CONS-001 or IMG-CONS-002 flagged",
+    "risk_increase": "Medium",
+    "reason": "Damage not consistent with reported incident.",
+    "flag": "InconsistentNarrativeAndImages"
+  },
+  {
+    "rule_id": "FRD-002",
+    "if": "history.recent_claims_same_part_count >= 2 within 180 days",
+    "risk_increase": "High",
+    "reason": "Repeated claims on same vehicle part in short time.",
+    "flag": "RepeatedClaimsSamePart"
+  },
+  {
+    "rule_id": "FRD-003",
+    "if": "cv_results.preexisting_damage_signals is not empty",
+    "risk_increase": "Medium",
+    "reason": "Preexisting damage indicated by visual signals.",
+    "flag": "PreexistingDamage"
+  },
+  {
+    "rule_id": "FRD-004",
+    "if": "policy.status != 'Active' at incident.date",
+    "decision": "Reject",
+    "severity": "Critical",
+    "reason": "Policy not active at time of loss.",
+    "flag": "PolicyInactive"
+  },
+  {
+    "rule_id": "FRD-005",
+    "if": "repair_estimate.amount >> expected_max_for_severity",
+    "risk_increase": "Medium",
+    "reason": "Estimate appears inflated vs detected damage severity.",
+    "flag": "EstimateInflated"
+  },
+  {
+    "rule_id": "FRD-006",
+    "if": "META-001 or META-002 or META-003 applied",
+    "risk_increase": "LowToMedium",
+    "reason": "Suspicious image metadata.",
+    "flag": "SuspiciousMetadata"
+  },
+  {
+    "rule_id": "FRD-SCORE-001",
+    "score_bands": {
+      "Low": "TotalFraudFlags <= 1 AND no Critical decision rules triggered.",
+      "Medium": "TotalFraudFlags between 2 and 3 AND no Critical decision rules triggered.",
+      "High": "Any Critical decision rule triggered OR TotalFraudFlags > 3."
+    },
+    "action_map": {
+      "Low": "Allow auto-approval if all other rules satisfied.",
+      "Medium": "Require human review of summary before final settlement.",
+      "High": "Require full manual investigation and do not auto-approve."
+    }
+  }
+]
