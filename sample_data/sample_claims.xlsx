@@ -1,0 +1,3 @@
+claimant_name,car_number,policy_number,incident_time,incident_description,incident_location
+ALICE TEST,KA-01-TEST,POL-0001,2025-12-03 09:30,Rear bumper hit while stationary. Minor scratch.,Main junction
+BOB SAMPLE,MH-02-SAMP,POL-0002,2025-12-02 18:20,Front collision at low speed. Airbag not deployed.,Ring road

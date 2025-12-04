@@ -14,7 +14,7 @@ uploaded_file = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"])
 sample_button = st.button("Load sample data")
 
 if sample_button:
-    with open("../sample_data/sample_claims.xlsx", "rb") as f:
+    with open("./sample_data/sample_claims.xlsx", "rb") as f:
         st.download_button("Download sample Excel", f.read(), file_name="sample_claims.xlsx")
 
 if uploaded_file:
