@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Config
 OLLAMA_API = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_S", "60"))
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT_S", "120"))
 
 # Helpers
 def _session_id():
@@ -46,43 +46,52 @@ def safe_float(x, default=0.5):
     except (TypeError, ValueError):
         return default
 
-def call_ollama_chat(system: str, user: str, model: str = OLLAMA_MODEL, max_tokens: int = 700):
+def call_ollama_chat(system: str, user: str, model: str = OLLAMA_MODEL, max_tokens: int = 900, retries: int = 1):
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
-        "stream": False
+        "stream": False,
+        "options": {"num_predict": max_tokens}
     }
-    try:
-        logger.info("Calling Ollama API at %s with model=%s", OLLAMA_API, model)
-        resp = requests.post(OLLAMA_API, json=payload, timeout=OLLAMA_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        # Ollama returns combined content under data["message"]["content"]
-        content = data.get("message", {}).get("content", "")
-        logger.info("Ollama API call succeeded; content length=%d", len(content))
-        return content, data
-    except Exception as e:
-        # bubble up caller to handle fallback / error
-        logger.exception("Ollama call failed.")
-        raise RuntimeError(f"Ollama call failed: {e}")
+    attempt = 0
+    last_err = None
+    while attempt <= retries:
+        try:
+            logger.info("Calling Ollama API at %s with model=%s (attempt %d)", OLLAMA_API, model, attempt + 1)
+            resp = requests.post(OLLAMA_API, json=payload, timeout=OLLAMA_TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data.get("message", {}).get("content", "")
+            logger.info("Ollama API call succeeded; content length=%d", len(content))
+            return content, data
+        except Exception as e:
+            last_err = e
+            logger.warning("Ollama call failed on attempt %d/%d: %s", attempt + 1, retries + 1, e)
+            attempt += 1
+            if attempt > retries:
+                break
+    # bubble up caller to handle fallback / error
+    logger.exception("Ollama call failed after retries.")
+    raise RuntimeError(f"Ollama call failed: {last_err}")
 
 def _build_system_and_user_prompt(fnol: Dict[str, Any], rules: List[Dict[str, Any]]) -> tuple[str, str]:
     system = (
         "You are ClaimAssist, a strict JSON-only assistant for generating FNOL packages AND claim assessments. "
         "Use only the retrieved KB rule snippets to ground coverage and fraud decisions. "
         "Return a single JSON object with keys: fnol_package, claim_assessment, summary, confidence.\n"
-        "fnol_package should follow the FNOL schema provided (workshop, policy, vehicle, incident, documents, cv_results).\n"
-        "claim_assessment MUST include: claim_reference_id, eligibility (Approved|Rejected|Review), "
-        "eligibility_reason, coverage_applicable, excluded_reasons, required_followups, fraud_risk_level, fraud_flags, "
-        "damage_summary (main_impact_area, severity, damaged_parts), recommendation (action, notes_for_handler), audit_log[].\n"
-        "Set 'confidence' and 'severity_score' to numeric values between 0 and 1 when applicable; NEVER leave them null or omit them.\n"
+        "fnol_package must include: session_id, incident_time, incident_location, damage_regions, photos, severity_score (0-1), "
+        "coverage_indicator, missing_fields, fraud_flags, requires_manual_review, cited_docs; nested workshop/policy/vehicle/incident/documents/cv_results should mirror the FNOL schema.\n"
+        "claim_assessment MUST include: claim_reference_id (set to session_id), eligibility (Approved|Rejected|Review), "
+        "eligibility_reason (non-empty), coverage_applicable, excluded_reasons, required_followups, fraud_risk_level (non-empty), fraud_flags, "
+        "damage_summary (main_impact_area, severity, damaged_parts), recommendation (action non-empty, notes_for_handler), audit_log[].\n"
+        "Set 'confidence' and 'severity_score' to numeric values between 0 and 1; NEVER leave them null or omit them. Responses without numeric confidence will be rejected.\n"
         "Do NOT output any text outside the JSON object. Apply rules logically; if uncertain set eligibility to 'Review' and add followups."
     )
     rules_block = "\n\n".join(
-        [f"[{i+1}] ({r.get('meta',{}).get('rule_id') or r.get('id')}) {r.get('text')[:800]}" for i, r in enumerate(rules)]
+        [f"[{i+1}] ({r.get('meta',{}).get('rule_id') or r.get('id')}) {r.get('text')}" for i, r in enumerate(rules)]
     )
     user = (
         f"FNOL JSON:\n{json.dumps(fnol, ensure_ascii=False)}\n\n"
@@ -128,9 +137,11 @@ def _fallback_fnol(claim: dict, snips: list[str]):
     for s in snips:
         if "collision" in s.lower():
             coverage = "covered"
+    incident_time_val = claim.get("incident_time")
+    incident_time_str = str(incident_time_val) if incident_time_val is not None else ""
     fnol = {
         "session_id": claim.get("session_id"),
-        "incident_time": claim.get("incident_time"),
+        "incident_time": incident_time_str,
         "incident_location": claim.get("incident_location") or "[redacted]",
         "damage_regions": damages,
         "photos": claim.get("photos", []),
@@ -173,7 +184,7 @@ def generate_fnol_ollama(sanitized_row: dict):
 
     # 1) RAG retrieval
     try:
-        rule_chunks = retrieve_rules_for_fnol(fnol_obj, top_k=20)
+        rule_chunks = retrieve_rules_for_fnol(fnol_obj, top_k=8)
         logger.info("Retrieved %d RAG rule chunks for session_id=%s", len(rule_chunks), session)
     except Exception:
         logger.exception("RAG retrieval failed; using defaults.")
@@ -231,17 +242,86 @@ def generate_fnol_ollama(sanitized_row: dict):
             "fallback": fallback
         }
 
-    # 5) Validate presence and type of 'confidence'
+    # 5) Validate presence and type of 'confidence' and other required assessment fields; retry once if missing
     confidence_raw = parsed.get("confidence", None)
-    if confidence_raw is None:
-        logger.warning("Confidence missing/null in model output; session_id=%s. Defaulting to 0.5", session)
-        confidence_val = 0.5
+    ca_tmp = parsed.get("claim_assessment") if isinstance(parsed, dict) else None
+    required_missing = []
+    if confidence_raw is None or (isinstance(confidence_raw, str) and not confidence_raw.strip()):
+        required_missing.append("confidence")
+    if not isinstance(ca_tmp, dict):
+        required_missing.extend(["claim_assessment", "claim_reference_id", "eligibility_reason", "fraud_risk_level", "recommendation.action"])
     else:
+        if not ca_tmp.get("claim_reference_id"):
+            required_missing.append("claim_reference_id")
+        if not ca_tmp.get("eligibility_reason"):
+            required_missing.append("eligibility_reason")
+        if not ca_tmp.get("fraud_risk_level"):
+            required_missing.append("fraud_risk_level")
+        if not (ca_tmp.get("recommendation") or {}).get("action"):
+            required_missing.append("recommendation.action")
+
+    if required_missing:
+        example = json.dumps({
+            "fnol_package": {
+                "session_id": session,
+                "incident_time": "2025-01-01T00:00:00",
+                "incident_location": "City",
+                "damage_regions": ["front"],
+                "photos": [],
+                "severity_score": 0.4,
+                "coverage_indicator": "covered",
+                "missing_fields": [],
+                "fraud_flags": [],
+                "requires_manual_review": False,
+                "cited_docs": []
+            },
+            "claim_assessment": {
+                "claim_reference_id": session,
+                "eligibility": "Review",
+                "eligibility_reason": "Non-empty reason",
+                "coverage_applicable": ["OwnDamage"],
+                "excluded_reasons": [],
+                "required_followups": [],
+                "fraud_risk_level": "Low",
+                "fraud_flags": [],
+                "damage_summary": {"main_impact_area": "Front", "severity": "Moderate", "damaged_parts": []},
+                "recommendation": {"action": "Proceed_With_Claim", "notes_for_handler": ""},
+                "audit_log": []
+            },
+            "summary": "text",
+            "confidence": 0.7
+        }, ensure_ascii=False)
+        logger.warning("Required fields missing %s; retrying model with explicit example.", required_missing)
+        retry_user_missing = user + f"\n\nYou omitted required fields: {required_missing}. Resend strict JSON with ALL required fields non-null. Example:\n{example}"
         try:
-            confidence_val = float(confidence_raw)
+            parsed_retry, meta_retry, raw_text_retry = _attempt_call(retry_user_missing)
+            if parsed_retry and isinstance(parsed_retry, dict):
+                parsed = parsed_retry
+                meta = meta_retry
+                raw_text = raw_text_retry
+                confidence_raw = parsed.get("confidence", confidence_raw)
+                ca_tmp = parsed.get("claim_assessment", ca_tmp)
         except Exception:
-            logger.warning("Confidence not numeric; session_id=%s value=%s. Defaulting to 0.5", session, confidence_raw)
-            confidence_val = 0.5
+            pass
+
+    # Backfill after retry
+    if not isinstance(ca_tmp, dict):
+        ca_tmp = {}
+    ca_tmp.setdefault("claim_reference_id", session)
+    ca_tmp.setdefault("eligibility_reason", "Auto-filled because model omitted this field.")
+    ca_tmp.setdefault("fraud_risk_level", "Medium")
+    rec_tmp = ca_tmp.get("recommendation") or {}
+    rec_tmp.setdefault("action", "Escalate_To_Human")
+    rec_tmp.setdefault("notes_for_handler", "")
+    ca_tmp["recommendation"] = rec_tmp
+    parsed["claim_assessment"] = ca_tmp
+
+    try:
+        confidence_val = float(confidence_raw)
+    except Exception:
+        confidence_val = 0.5
+    # revalidate after backfill
+    ca_errors = validate_claim_assessment_dict(ca_tmp)
 
     # 6) Extract fnol package from parsed JSON
     fnol = parsed.get("fnol_package") or {}
@@ -252,7 +332,13 @@ def generate_fnol_ollama(sanitized_row: dict):
         t = fnol_obj.incident.time or ""
         d = fnol_obj.incident.date or ""
         fnol["incident_time"] = f"{d} {t}".strip() or ""
-    fnol.setdefault("coverage_indicator", "unknown")
+    else:
+        fnol["incident_time"] = str(fnol.get("incident_time") or "")
+    # normalize coverage_indicator to string
+    cov_ind = fnol.get("coverage_indicator", "unknown")
+    if isinstance(cov_ind, bool):
+        cov_ind = "covered" if cov_ind else "unknown"
+    fnol["coverage_indicator"] = str(cov_ind)
     fnol.setdefault("damage_regions", [])
     fnol.setdefault("photos", [])
     fnol.setdefault("missing_fields", [])
@@ -269,7 +355,7 @@ def generate_fnol_ollama(sanitized_row: dict):
         ca_errors.append("missing_claim_assessment")
         claim_assessment = default_claim_assessment(session).to_dict()
     else:
-        if "claim_reference_id" not in claim_assessment:
+        if "claim_reference_id" not in claim_assessment or not claim_assessment.get("claim_reference_id"):
             claim_assessment["claim_reference_id"] = session
         ca_errors = validate_claim_assessment_dict(claim_assessment)
         if ca_errors:
@@ -288,15 +374,26 @@ def generate_fnol_ollama(sanitized_row: dict):
             if ca_errors:
                 claim_assessment = default_claim_assessment(session).to_dict()
 
+    # Backfill any missing critical fields to avoid empty outputs
+    if not claim_assessment.get("fraud_risk_level"):
+        claim_assessment["fraud_risk_level"] = "Medium"
+    if not claim_assessment.get("eligibility_reason"):
+        claim_assessment["eligibility_reason"] = "Model supplied empty reason"
+    rec = claim_assessment.get("recommendation") or {}
+    if not rec.get("action"):
+        rec["action"] = "Escalate_To_Human"
+    rec.setdefault("notes_for_handler", "")
+    claim_assessment["recommendation"] = rec
+
     # 8) Deterministic verification
-    verification = run_basic_checks(fnol, sanitized_row, [c["text"] for c in rule_chunks], claim_assessment=claim_assessment)
+    verification = run_basic_checks(fnol, sanitized_row, [c["text"] for c in rule_chunks], claim_assessment=ca_tmp)
     if not verification.get("passed", True):
         fnol["requires_manual_review"] = True
 
     logger.info("Returning FNOL for session_id=%s with verification_passed=%s", session, verification.get("passed", True))
     return {
         "fnol_package": fnol,
-        "claim_assessment": claim_assessment,
+        "claim_assessment": ca_tmp,
         "summary": parsed.get("summary", "(no summary provided)") if isinstance(parsed, dict) else "(no summary provided)",
         "confidence": confidence_val,
         "retrieved_docs": rule_chunks,

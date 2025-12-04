@@ -158,10 +158,16 @@ def fnol_from_row(row: Dict[str, Any], session_id: str) -> FNOL:
             incident_date = _safe_date_str(parts[0])
         if len(parts) > 1:
             incident_time_part = _safe_date_str(parts[1])
+    policy_cov = row.get("policy_coverage_type") or row.get("coverage_type") or "Unknown"
+    policy_addons = row.get("policy_addons") or row.get("addons") or []
     fnol = FNOL(
         source="Other",
         workshop=WorkshopInfo(email=None),
-        policy=PolicyInfo(policy_id=row.get("policy_number") or None),
+        policy=PolicyInfo(
+            policy_id=row.get("policy_number") or None,
+            coverage_type=policy_cov,
+            addons=policy_addons if isinstance(policy_addons, list) else []
+        ),
         vehicle=VehicleInfo(registration_number=row.get("car_number") or None),
         incident=IncidentInfo(
             date=incident_date,

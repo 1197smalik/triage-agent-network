@@ -8,6 +8,20 @@ import streamlit as st
 
 from streamlit_app.utils.excel_parser import parse_excel_to_df
 from streamlit_app.utils.pii_sanitizer import mask_pii_df
+from streamlit_app.utils.validator import assign_policy_tags
+from datetime import datetime, date
+
+
+def _json_default(o):
+    try:
+        import pandas as pd
+    except Exception:
+        pd = None
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    if pd and isinstance(o, pd.Timestamp):
+        return o.isoformat()
+    return str(o)
 from agents.orchestrator_agent import orchestrate_batch
 
 logging.basicConfig(
@@ -42,6 +56,7 @@ if uploaded_file:
 
         st.subheader("Sanitized preview (tokens only)")
         masked = mask_pii_df(df)
+        masked = assign_policy_tags(masked)
         logger.info("PII masked; proceeding to preview and processing.")
         st.dataframe(masked)
 
@@ -49,7 +64,7 @@ if uploaded_file:
             logger.info("FNOL processing triggered via Ollama.")
             rows = masked.to_dict(orient="records")
             total = len(rows)
-            progress = st.progress(0, text=f"Processing 0/{total}")
+            progress = st.progress(0, text=f"Processed 0/{total}")
             status_box = st.empty()
             results_container = st.container()
             results = []
@@ -71,7 +86,13 @@ if uploaded_file:
                         fraud_risk = ca.get("fraud_risk_level", "?")
                         severity_val = (ca.get("damage_summary") or {}).get("severity", "")
                         severity = severity_val.lower() if isinstance(severity_val, str) else ""
-                        color_map = {"high": "red", "medium": "darkorange", "low": "gold"}
+                        color_map = {
+                            "high": "red",
+                            "severe": "red",
+                            "medium": "darkorange",
+                            "moderate": "darkorange",
+                            "low": "gold"
+                        }
                         sev_color = color_map.get(severity, "inherit")
                         severity_text = f"<span style='color:{sev_color}; font-weight:600'>{severity.title() if severity else 'Unknown'}</span>"
 
@@ -91,7 +112,12 @@ if uploaded_file:
                             def _stringify_list(val):
                                 if not val:
                                     return ["None"]
-                                return [v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for v in val]
+                                if isinstance(val, (str, bool)):
+                                    return [str(val)]
+                                try:
+                                    return [v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for v in val]
+                                except TypeError:
+                                    return [str(val)]
                             st.write(f"Required followups: {', '.join(_stringify_list(ca.get('required_followups')))}")
                             st.write(f"Fraud flags: {', '.join(_stringify_list(ca.get('fraud_flags')))}")
                             st.write(f"Coverage applicable: {', '.join(_stringify_list(ca.get('coverage_applicable')))}")
@@ -102,8 +128,8 @@ if uploaded_file:
                             b64 = base64.b64encode(json_str.encode()).decode()
                             href = f'<a href="data:application/json;base64,{b64}" target="_blank" rel="noopener">View FNOL JSON</a>'
                             st.markdown(href, unsafe_allow_html=True)
-                            if st.button("Show JSON inline", key=f"showjson-{idx}"):
-                                st.json(out)
+                            # Show JSON inline without interrupting processing
+                            st.json(out)
                         if process_ready:
                             row_container.markdown("</div>", unsafe_allow_html=True)
                     else:
@@ -116,7 +142,7 @@ if uploaded_file:
             logger.info("FNOL processing complete; %d rows.", len(results))
             st.session_state["fnol_results"] = results
             st.success("Processed via Ollama")
-            st.download_button("Download results JSON", json.dumps(results, indent=2), file_name="fnol_results.json")
+            st.download_button("Download results JSON", json.dumps(results, indent=2, default=_json_default), file_name="fnol_results.json")
     except Exception as e:
         logger.exception("Failed to process file via Streamlit app.")
         st.error("⚠️ Failed to process file. Full traceback below:")
