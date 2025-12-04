@@ -1,6 +1,8 @@
 # streamlit_app/app.py
 import json
 import logging
+import base64
+from schemas.claims import default_claim_assessment
 
 import streamlit as st
 
@@ -60,10 +62,50 @@ if uploaded_file:
 
                 # update UI incrementally
                 with results_container:
-                    if "fnol_package" in out:
-                        sid = out["fnol_package"].get("session_id", "n/a")
-                        st.markdown(f"### Row {idx} — session {sid}")
-                        st.json(out)
+                    fnol_data = out.get("fnol_package") or {}
+                    if fnol_data:
+                        sid = fnol_data.get("session_id", "n/a")
+                        ca = out.get("claim_assessment") or default_claim_assessment(sid).to_dict()
+                        claim_ref = ca.get("claim_reference_id", sid)
+                        eligibility = ca.get("eligibility", "?")
+                        fraud_risk = ca.get("fraud_risk_level", "?")
+                        severity_val = (ca.get("damage_summary") or {}).get("severity", "")
+                        severity = severity_val.lower() if isinstance(severity_val, str) else ""
+                        color_map = {"high": "red", "medium": "darkorange", "low": "gold"}
+                        sev_color = color_map.get(severity, "inherit")
+                        severity_text = f"<span style='color:{sev_color}; font-weight:600'>{severity.title() if severity else 'Unknown'}</span>"
+
+                        process_ready = (
+                            ca.get("eligibility") == "Approved"
+                            and not ca.get("required_followups")
+                            and not fnol_data.get("requires_manual_review")
+                            and out.get("verification", {}).get("passed", False)
+                        )
+
+                        summary_label = f"Row {idx} — Ref {claim_ref} | Eligibility: {eligibility} | Fraud: {fraud_risk} | Severity: {severity.title() if severity else 'Unknown'}"
+                        row_container = st.container()
+                        if process_ready:
+                            row_container.markdown("<div style='background-color:#e8f5e9; padding:8px; border-radius:6px;'>", unsafe_allow_html=True)
+                        with row_container.expander(summary_label, expanded=False):
+                            st.markdown(f"Severity: {severity_text}", unsafe_allow_html=True)
+                            def _stringify_list(val):
+                                if not val:
+                                    return ["None"]
+                                return [v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for v in val]
+                            st.write(f"Required followups: {', '.join(_stringify_list(ca.get('required_followups')))}")
+                            st.write(f"Fraud flags: {', '.join(_stringify_list(ca.get('fraud_flags')))}")
+                            st.write(f"Coverage applicable: {', '.join(_stringify_list(ca.get('coverage_applicable')))}")
+                            st.write(f"Excluded reasons: {', '.join(_stringify_list(ca.get('excluded_reasons')))}")
+                            st.write(f"Recommendation: {ca.get('recommendation', {}).get('action', 'n/a')} — {ca.get('recommendation', {}).get('notes_for_handler', '')}")
+                            # FNOL JSON link
+                            json_str = json.dumps(out, indent=2)
+                            b64 = base64.b64encode(json_str.encode()).decode()
+                            href = f'<a href="data:application/json;base64,{b64}" target="_blank" rel="noopener">View FNOL JSON</a>'
+                            st.markdown(href, unsafe_allow_html=True)
+                            if st.button("Show JSON inline", key=f"showjson-{idx}"):
+                                st.json(out)
+                        if process_ready:
+                            row_container.markdown("</div>", unsafe_allow_html=True)
                     else:
                         sid = out.get("session_id", "n/a")
                         st.markdown(f"### Row {idx} — error (session {sid})")

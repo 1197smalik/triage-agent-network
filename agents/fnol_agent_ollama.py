@@ -17,9 +17,17 @@ import uuid
 from datetime import datetime
 import requests
 import traceback
+from typing import Dict, Any, Tuple, List
 
-from .rag_simple import retrieve_relevant_snips
+from .rag_simple import retrieve_relevant_snips, retrieve_rules_for_fnol
 from .validators import validate_fnol_schema, run_basic_checks
+from schemas.claims import (
+    FNOL,
+    ClaimAssessment,
+    fnol_from_row,
+    default_claim_assessment,
+    validate_claim_assessment_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,24 +69,25 @@ def call_ollama_chat(system: str, user: str, model: str = OLLAMA_MODEL, max_toke
         logger.exception("Ollama call failed.")
         raise RuntimeError(f"Ollama call failed: {e}")
 
-def _build_system_and_user_prompt(claim: dict, retrieved_snips: list[str]) -> tuple[str, str]:
+def _build_system_and_user_prompt(fnol: Dict[str, Any], rules: List[Dict[str, Any]]) -> tuple[str, str]:
     system = (
-        "You are ClaimAssist, a strict JSON-only assistant for generating FNOL packages. "
-        "Use only the retrieved policy/SOP snippets to ground any coverage claims. "
-        "Return a single JSON object with keys: fnol_package, summary, confidence.\n"
-        "fnol_package MUST include: session_id, incident_time, incident_location, damage_regions (array), "
-        "photos (array), severity_score (0-1), coverage_indicator ('covered'|'not_covered'|'unknown'), "
-        "missing_fields (array), fraud_flags (array), requires_manual_review (bool), cited_docs (array).\n"
-        "Set 'confidence' to a numeric value between 0 and 1; NEVER leave it null or omit it.\n"
-        "Set 'severity_score' to a numeric value between 0 and 1; NEVER leave it null or omit it.\n"
-        "Do NOT output any text outside the JSON object. If you cannot determine coverage using the snippets, set "
-        "'coverage_indicator' to 'unknown'."
+        "You are ClaimAssist, a strict JSON-only assistant for generating FNOL packages AND claim assessments. "
+        "Use only the retrieved KB rule snippets to ground coverage and fraud decisions. "
+        "Return a single JSON object with keys: fnol_package, claim_assessment, summary, confidence.\n"
+        "fnol_package should follow the FNOL schema provided (workshop, policy, vehicle, incident, documents, cv_results).\n"
+        "claim_assessment MUST include: claim_reference_id, eligibility (Approved|Rejected|Review), "
+        "eligibility_reason, coverage_applicable, excluded_reasons, required_followups, fraud_risk_level, fraud_flags, "
+        "damage_summary (main_impact_area, severity, damaged_parts), recommendation (action, notes_for_handler), audit_log[].\n"
+        "Set 'confidence' and 'severity_score' to numeric values between 0 and 1 when applicable; NEVER leave them null or omit them.\n"
+        "Do NOT output any text outside the JSON object. Apply rules logically; if uncertain set eligibility to 'Review' and add followups."
     )
-    retrieved_block = "\n\n".join(f"[{i+1}] {s[:800]}" for i, s in enumerate(retrieved_snips))
+    rules_block = "\n\n".join(
+        [f"[{i+1}] ({r.get('meta',{}).get('rule_id') or r.get('id')}) {r.get('text')[:800]}" for i, r in enumerate(rules)]
+    )
     user = (
-        f"Claim (SANITIZED TOKENIZED FIELDS ONLY):\n{json.dumps(claim, ensure_ascii=False)}\n\n"
-        f"Retrieved knowledge snippets:\n{retrieved_block}\n\n"
-        "Return the JSON now."
+        f"FNOL JSON:\n{json.dumps(fnol, ensure_ascii=False)}\n\n"
+        f"Retrieved KB rules:\n{rules_block}\n\n"
+        "Return strict JSON with keys: fnol_package, claim_assessment, summary, confidence."
     )
     return system, user
 
@@ -132,7 +141,8 @@ def _fallback_fnol(claim: dict, snips: list[str]):
         "requires_manual_review": (coverage == "unknown"),
         "cited_docs": [{"doc_id": f"kb_snip_{i+1}", "excerpt": s[:200]} for i, s in enumerate(snips)]
     }
-    return {"fnol_package": fnol, "summary": "(fallback) generated", "confidence": 0.75}
+    assessment = default_claim_assessment(claim.get("session_id", "unknown")).to_dict()
+    return {"fnol_package": fnol, "claim_assessment": assessment, "summary": "(fallback) generated", "confidence": 0.75}
 
 # Main function exposed to orchestrator
 def generate_fnol_ollama(sanitized_row: dict):
@@ -158,40 +168,33 @@ def generate_fnol_ollama(sanitized_row: dict):
     """
     session = _session_id()
     logger.info("Starting Ollama FNOL generation; session_id=%s", session)
-    claim = {
-        "session_id": session,
-        "policy_token": sanitized_row.get("policy_number",""),
-        "vehicle_token": sanitized_row.get("car_number",""),
-        "claimant_token": sanitized_row.get("claimant_name",""),
-        "incident_time": str(sanitized_row.get("incident_time","")),
-        "incident_description": sanitized_row.get("incident_description",""),
-        "incident_location": sanitized_row.get("incident_location",""),
-        "photos": sanitized_row.get("photos", [])
-    }
+    fnol_obj: FNOL = fnol_from_row(sanitized_row, session)
+    fnol_dict = fnol_obj.to_dict()
 
     # 1) RAG retrieval
     try:
-        snips = retrieve_relevant_snips(claim["incident_description"], top_k=3)
-        logger.info("Retrieved %d RAG snippets for session_id=%s", len(snips), session)
+        rule_chunks = retrieve_rules_for_fnol(fnol_obj, top_k=20)
+        logger.info("Retrieved %d RAG rule chunks for session_id=%s", len(rule_chunks), session)
     except Exception:
-        # if retrieval fails, use safe defaults
         logger.exception("RAG retrieval failed; using defaults.")
-        snips = ["Collision within policy term is covered unless deliberate damage.",
-                 "Minimum 3 photos: overall, close-up of damage, license plate.",
-                 "If severity_score > 0.6 escalate to adjuster."]
+        rule_chunks = [{"id": "default", "text": "Collision within policy term is covered unless deliberate damage.", "meta": {}}]
 
     # 2) Build prompt
-    system, user = _build_system_and_user_prompt(claim, snips)
+    system, user = _build_system_and_user_prompt(fnol_dict, rule_chunks)
+
+    def _attempt_call(user_prompt: str) -> Tuple[Dict[str, Any], Dict[str, Any], str]:
+        raw_text_local = None
+        meta_local = {}
+        raw_text_local, meta_local = call_ollama_chat(system, user_prompt)
+        parsed_local = _extract_json_from_text(raw_text_local)
+        return parsed_local, meta_local, raw_text_local
 
     # 3) Call Ollama
-    raw_text = None
-    meta = {}
     try:
-        raw_text, meta = call_ollama_chat(system, user)
+        parsed, meta, raw_text = _attempt_call(user)
     except Exception as e:
         meta = {"error": str(e), "trace": traceback.format_exc()}
-        # fall back to deterministic fallback but mark as error (strict mode B)
-        fallback = _fallback_fnol(claim, snips)
+        fallback = _fallback_fnol({"session_id": session, **sanitized_row}, [c["text"] for c in rule_chunks])
         logger.error("Ollama call failed for session_id=%s; returning fallback.", session)
         return {
             "error": "ollama_call_failed",
@@ -200,11 +203,25 @@ def generate_fnol_ollama(sanitized_row: dict):
             "fallback": fallback
         }
 
-    # 4) Parse model output into JSON
-    parsed = _extract_json_from_text(raw_text)
+    # 4) Parse model output into JSON; retry once if needed
     if parsed is None:
-        # no JSON detected - return error with fallback attached
-        fallback = _fallback_fnol(claim, snips)
+        logger.warning("First parse attempt failed; retrying with guidance.")
+        retry_user = user + "\n\nYour previous response could not be parsed as JSON. Return strict JSON only."
+        try:
+            parsed, meta, raw_text = _attempt_call(retry_user)
+        except Exception as e:
+            meta = {"error": str(e), "trace": traceback.format_exc()}
+            fallback = _fallback_fnol({"session_id": session, **sanitized_row}, [c["text"] for c in rule_chunks])
+            return {
+                "error": "invalid_model_output",
+                "reason": "no_json_parsed",
+                "raw_model_text": raw_text,
+                "llm_raw_meta": meta,
+                "fallback": fallback
+            }
+
+    if parsed is None:
+        fallback = _fallback_fnol({"session_id": session, **sanitized_row}, [c["text"] for c in rule_chunks])
         logger.error("No JSON parsed from Ollama response; session_id=%s", session)
         return {
             "error": "invalid_model_output",
@@ -227,40 +244,62 @@ def generate_fnol_ollama(sanitized_row: dict):
             confidence_val = 0.5
 
     # 6) Extract fnol package from parsed JSON
-    fnol = parsed.get("fnol_package")
+    fnol = parsed.get("fnol_package") or {}
     if not isinstance(fnol, dict):
-        # invalid structure
-        fallback = _fallback_fnol(claim, snips)
-        logger.error("fnol_package missing/invalid; session_id=%s", session)
-        return {
-            "error": "invalid_model_output",
-            "reason": "fnol_package_missing_or_invalid",
-            "raw_model_text": raw_text,
-            "llm_raw_meta": meta,
-            "fallback": fallback
-        }
-
-    # normalize severity_score if missing/null
-    fnol["severity_score"] = safe_float(fnol.get("severity_score"), default=0.3)
-
-    # Ensure required defaults
+        fnol = fnol_dict
+    # backfill compatibility fields
+    if "incident_time" not in fnol:
+        t = fnol_obj.incident.time or ""
+        d = fnol_obj.incident.date or ""
+        fnol["incident_time"] = f"{d} {t}".strip() or ""
+    fnol.setdefault("coverage_indicator", "unknown")
+    fnol.setdefault("damage_regions", [])
+    fnol.setdefault("photos", [])
+    fnol.setdefault("missing_fields", [])
+    fnol.setdefault("fraud_flags", [])
     fnol.setdefault("session_id", session)
+    fnol["severity_score"] = safe_float(fnol.get("severity_score"), default=0.3)
     if "cited_docs" not in fnol or not isinstance(fnol.get("cited_docs"), list):
-        fnol["cited_docs"] = [{"doc_id": f"kb_snip_{i+1}", "excerpt": s[:200]} for i, s in enumerate(snips)]
+        fnol["cited_docs"] = [{"doc_id": c.get("id"), "excerpt": c.get("text", "")[:200]} for c in rule_chunks[:3]]
 
-    # 7) Deterministic verification
-    verification = run_basic_checks(fnol, claim, snips)
-    # if verification failed, mark requires_manual_review
+    # 7) Claim assessment handling
+    claim_assessment = parsed.get("claim_assessment") if isinstance(parsed, dict) else None
+    ca_errors: List[str] = []
+    if not isinstance(claim_assessment, dict):
+        ca_errors.append("missing_claim_assessment")
+        claim_assessment = default_claim_assessment(session).to_dict()
+    else:
+        if "claim_reference_id" not in claim_assessment:
+            claim_assessment["claim_reference_id"] = session
+        ca_errors = validate_claim_assessment_dict(claim_assessment)
+        if ca_errors:
+            logger.warning("Claim assessment validation errors: %s", ca_errors)
+            # simple retry if errors
+            retry_user = user + f"\n\nErrors found: {ca_errors}. Fix and return valid JSON now."
+            try:
+                parsed_retry, meta_retry, raw_text_retry = _attempt_call(retry_user)
+                if parsed_retry and isinstance(parsed_retry, dict) and parsed_retry.get("claim_assessment"):
+                    claim_assessment = parsed_retry.get("claim_assessment")
+                    meta = meta_retry
+                    raw_text = raw_text_retry
+                    ca_errors = validate_claim_assessment_dict(claim_assessment)
+            except Exception:
+                pass
+            if ca_errors:
+                claim_assessment = default_claim_assessment(session).to_dict()
+
+    # 8) Deterministic verification
+    verification = run_basic_checks(fnol, sanitized_row, [c["text"] for c in rule_chunks], claim_assessment=claim_assessment)
     if not verification.get("passed", True):
         fnol["requires_manual_review"] = True
 
-    # 8) Return the clean object
     logger.info("Returning FNOL for session_id=%s with verification_passed=%s", session, verification.get("passed", True))
     return {
         "fnol_package": fnol,
-        "summary": parsed.get("summary", "(no summary provided)"),
+        "claim_assessment": claim_assessment,
+        "summary": parsed.get("summary", "(no summary provided)") if isinstance(parsed, dict) else "(no summary provided)",
         "confidence": confidence_val,
-        "retrieved_docs": [{"text": s} for s in snips],
+        "retrieved_docs": rule_chunks,
         "verification": verification,
         "llm_raw_meta": meta,
         "raw_model_text": raw_text
