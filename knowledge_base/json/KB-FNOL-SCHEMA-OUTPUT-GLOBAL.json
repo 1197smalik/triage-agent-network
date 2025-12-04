@@ -1,0 +1,118 @@
+{
+  "fnol_schema": {
+    "FNOL": {
+      "source": "Workshop_Email|Other",
+      "workshop": {
+        "id": "string|null",
+        "name": "string|null",
+        "email": "string",
+        "phone": "string|null"
+      },
+      "policy": {
+        "policy_id": "string|null",
+        "status": "Active|Expired|Suspended|Unknown",
+        "coverage_type": "TPL|OD|COMP|FT|GC|Unknown",
+        "addons": [
+          "ZeroDep",
+          "EngineProtect",
+          "Consumables",
+          "Towing"
+        ],
+        "usage": "Private|Commercial|Unknown",
+        "start_date": "string|null",
+        "end_date": "string|null"
+      },
+      "vehicle": {
+        "vin": "string|null",
+        "registration_number": "string|null",
+        "make": "string|null",
+        "model": "string|null",
+        "year": "number|null",
+        "odometer": "number|null"
+      },
+      "incident": {
+        "date": "string|null",
+        "time": "string|null",
+        "location": "string|null",
+        "impact_point": "Front|Rear|Left|Right|Multiple|Unknown",
+        "type": "Collision|Theft|Fire|Flood|GlassOnly|Vandalism|Other",
+        "description": "string",
+        "third_party_involved": "boolean|null"
+      },
+      "documents": {
+        "police_report_present": "boolean",
+        "dl_present": "boolean",
+        "rc_present": "boolean",
+        "photos_count": "number",
+        "estimate_present": "boolean"
+      },
+      "cv_results": {
+        "damaged_parts": [
+          {
+            "part_name": "string",
+            "damage_type": "string",
+            "severity": "Minor|Moderate|Severe"
+          }
+        ],
+        "license_plate_ocr": "string|null",
+        "vin_ocr": "string|null",
+        "odometer_ocr": "number|null",
+        "consistency_with_incident": "true|false|unknown",
+        "preexisting_damage_signals": [
+          "string"
+        ]
+      }
+    }
+  },
+  "assessment_schema": {
+    "claim_assessment": {
+      "claim_reference_id": "string",
+      "eligibility": "Approved|Rejected|Review",
+      "eligibility_reason": "string",
+      "coverage_applicable": [
+        "OwnDamage",
+        "ThirdPartyLiability",
+        "Fire",
+        "Theft",
+        "Glass",
+        "None"
+      ],
+      "excluded_reasons": [
+        "string"
+      ],
+      "required_followups": [
+        "string"
+      ],
+      "fraud_risk_level": "Low|Medium|High",
+      "fraud_flags": [
+        "string"
+      ],
+      "damage_summary": {
+        "main_impact_area": "Front|Rear|Left|Right|Multiple|Unknown",
+        "severity": "Minor|Moderate|Severe|Mixed",
+        "damaged_parts": [
+          {
+            "part_name": "string",
+            "severity": "Minor|Moderate|Severe"
+          }
+        ]
+      },
+      "recommendation": {
+        "action": "Proceed_With_Claim|Reject_Claim|Escalate_To_Human",
+        "notes_for_handler": "string"
+      },
+      "audit_log": [
+        {
+          "rule_id": "string",
+          "decision_effect": "Approved|Rejected|Flagged|NoEffect",
+          "note": "string"
+        }
+      ]
+    }
+  },
+  "fnol_ack_template": {
+    "to": "workshop.email",
+    "subject": "FNOL Received - Claim Reference {{claim_reference_id}}",
+    "body": "We have received the First Notice of Loss for vehicle {{vehicle.registration_number}} under policy {{policy.policy_id}}. Current triage status: {{claim_assessment.eligibility}}. Missing items (if any): {{claim_assessment.required_followups}}. Our team or automated systems will continue processing and follow up if additional information is required."
+  }
+}

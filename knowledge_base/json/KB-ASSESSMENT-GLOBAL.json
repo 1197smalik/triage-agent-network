@@ -1,0 +1,117 @@
+[
+  {
+    "rule_id": "ASM-POL-001",
+    "if": "policy.coverage_type == 'COMP'",
+    "then": "OwnDamage and ThirdPartyLiability may be covered if no exclusions apply.",
+    "explain": "Comprehensive coverage includes both own damage and third-party liability."
+  },
+  {
+    "rule_id": "ASM-POL-002",
+    "if": "incident.type == 'Fire' AND policy.coverage_type NOT IN ['FT', 'COMP']",
+    "outcome": "Reject",
+    "reason": "Fire not covered under this policy type."
+  },
+  {
+    "rule_id": "ASM-POL-003",
+    "if": "incident.type == 'Theft' AND policy.coverage_type NOT IN ['FT', 'COMP']",
+    "outcome": "Reject",
+    "reason": "Theft not covered under this policy type."
+  },
+  {
+    "rule_id": "ASM-DRV-001",
+    "if": "driver.license_status != 'Valid'",
+    "outcome": "RejectOwnDamage",
+    "severity": "High",
+    "explain": "Driver is not authorised or license is invalid for vehicle."
+  },
+  {
+    "rule_id": "ASM-DRV-002",
+    "if": "driver.alcohol_level > LegalLimit",
+    "outcome": "Reject",
+    "severity": "Critical",
+    "explain": "Driver above legal alcohol limit at time of loss."
+  },
+  {
+    "rule_id": "ASM-CAU-001",
+    "if": "incident.impact_point == 'Rear'",
+    "expected_damage": [
+      "Rear_Bumper",
+      "Trunk",
+      "Tail_Lights",
+      "Rear_Quarter_Panels"
+    ],
+    "explain": "Rear impact should mainly damage rear parts."
+  },
+  {
+    "rule_id": "ASM-CAU-002",
+    "if": "incident.impact_point == 'Front'",
+    "expected_damage": [
+      "Front_Bumper",
+      "Hood",
+      "Head_Lights",
+      "Front_Fenders"
+    ]
+  },
+  {
+    "rule_id": "ASM-CAU-003",
+    "if": "incident.type == 'GlassOnly'",
+    "expected_damage": [
+      "Windshield",
+      "Side_Windows",
+      "Rear_Window"
+    ],
+    "explain": "Glass-only incidents should not show large metal body damage."
+  },
+  {
+    "rule_id": "ASM-CAU-004",
+    "if": "expected_damage NOT INTERSECT cv_results.damaged_parts.part_name",
+    "outcome": "FlagInconsistency",
+    "reason": "Detected damage does not match expected parts for described incident.",
+    "severity": "High"
+  },
+  {
+    "rule_id": "ASM-DOC-001",
+    "if": "incident.type == 'Theft'",
+    "required_docs": [
+      "documents.police_report_present",
+      "documents.rc_present"
+    ],
+    "outcome_if_missing": "Review",
+    "explain": "Theft claims normally require a police report and registration document."
+  },
+  {
+    "rule_id": "ASM-DOC-002",
+    "if": "documents.photos_count < 6",
+    "outcome": "Review",
+    "reason": "Insufficient photo evidence.",
+    "required_followups": [
+      "Request additional damage and overview photos."
+    ]
+  },
+  {
+    "rule_id": "ASM-LIA-001",
+    "if": "incident.third_party_involved == true",
+    "requires": [
+      "documents.police_report_present"
+    ],
+    "explain": "Third-party involvement normally requires a police or authority report."
+  },
+  {
+    "rule_id": "ASM-FINAL-001",
+    "decision": "Approved",
+    "condition": "All mandatory rules satisfied AND no Critical exclusions triggered AND evidence sufficient.",
+    "explain_required": true
+  },
+  {
+    "rule_id": "ASM-FINAL-002",
+    "decision": "Rejected",
+    "condition": "Any Critical exclusion triggered (policy inactive, intentional damage, drunk driving).",
+    "explain_required": true
+  },
+  {
+    "rule_id": "ASM-FINAL-003",
+    "decision": "Review",
+    "condition": "Inconsistencies present OR missing critical evidence OR strong but non-conclusive fraud signals.",
+    "explain_required": true
+  }
+]
