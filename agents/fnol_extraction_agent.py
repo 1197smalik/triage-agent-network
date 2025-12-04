@@ -1,10 +1,14 @@
 # agents/fnol_extraction_agent.py
+import logging
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 def extract_fnol_from_row(row: dict) -> dict:
     # row fields are already masked tokens; we keep that token and use incident_description for NLP
     session_id = "sess-" + uuid.uuid4().hex[:8]
+    logger.info("Extracting FNOL from row; session_id=%s", session_id)
     # try to standardize time
     itime = row.get("incident_time")
     try:

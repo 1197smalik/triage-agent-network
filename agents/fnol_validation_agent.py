@@ -1,5 +1,8 @@
 # agents/fnol_validation_agent.py
+import logging
 from streamlit_app.utils.validator import validate_row
+
+logger = logging.getLogger(__name__)
 
 def validate_fnol_package(fnol: dict, retrieved: list) -> dict:
     # minimal validation: required fields + doc-grounded coverage flag (synthetic)
@@ -18,4 +21,5 @@ def validate_fnol_package(fnol: dict, retrieved: list) -> dict:
     if "minor" in desc or "scratch" in desc: severity = 0.2
     if "collision" in desc or "airbag" in desc: severity = 0.7
     fnol["severity_score"] = round(severity,2)
+    logger.info("Validation agent completed; coverage=%s severity=%.2f issues=%s", coverage, severity, issues)
     return fnol
