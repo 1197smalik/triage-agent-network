@@ -1,7 +1,8 @@
 # agents/orchestrator_agent.py
 import logging
+
+from core.use_cases import process_row
 from rag.vectorstore import SimpleVectorStore
-from agents.fnol_agent import generate_fnol_for_row
 
 # load a simple RAG store (in-memory)
 vs = SimpleVectorStore()
@@ -12,7 +13,7 @@ def orchestrate_batch(rows: list):
     results = []
     for r in rows:
         logger.info("Orchestrating FNOL generation for row.")
-        out = generate_fnol_for_row(r)
+        out = process_row(r)
         results.append(out)
     logger.info("Completed orchestration for %d rows.", len(results))
     return results

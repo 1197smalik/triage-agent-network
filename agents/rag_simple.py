@@ -172,3 +172,26 @@ def retrieve_rules_for_fnol(fnol: FNOL, top_k: int = 12) -> List[Dict[str, Any]]
             break
     logger.info("retrieve_rules_for_fnol returning %d chunks for query.", len(results))
     return results
+
+
+def retrieve_rules_for_fnol_split(fnol: FNOL, top_k: int = 16, fraud_k: int = 6, coverage_k: int = 6) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Retrieve rules but return them bucketed so callers can prioritize fraud vs coverage vs general.
+    """
+    ranked = retrieve_rules_for_fnol(fnol, top_k=top_k * 2)  # get extra to allow filtering
+    fraud, coverage, general = [], [], []
+    for chunk in ranked:
+        tags = chunk.get("meta", {}).get("coverage_tags", []) or []
+        if "fraud" in tags or (chunk.get("meta", {}).get("source", "").lower().startswith("kb-fraud")):
+            if len(fraud) < fraud_k:
+                fraud.append(chunk)
+                continue
+        if "coverage" in tags or "comp" in tags or "tpl" in tags or "zerodep" in tags:
+            if len(coverage) < coverage_k:
+                coverage.append(chunk)
+                continue
+        general.append(chunk)
+    # trim general to fill remaining budget
+    remaining = max(0, top_k - len(fraud) - len(coverage))
+    general = general[:remaining]
+    return {"fraud": fraud, "coverage": coverage, "general": general}
