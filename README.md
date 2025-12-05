@@ -50,6 +50,43 @@ To pick a port (e.g., 9999):
 streamlit run app.py --server.port=9999
 ```
 
+## Static analysis
+Install dev tools:
+```
+pip install -r requirements-dev.txt
+```
+Run lint/type checks:
+```
+ruff check .
+mypy --config-file pyproject.toml .
+```
+
+### Security scan
+```
+bandit -r .  # bandit has issues on Python 3.14; use pip-audit/semgrep below if it fails
+pip-audit
+semgrep --config p/ci --error
+```
+If Semgrep needs a cert bundle, point it at certifi:
+```
+export SSL_CERT_FILE=$(python -c "import certifi; print(certifi.where())")
+semgrep --config p/security-audit --config p/secrets --error
+```
+
+If bandit or pip-audit need to be run from the project venv:
+```
+venv_claim/bin/ruff check .
+venv_claim/bin/python -m mypy --config-file pyproject.toml .
+venv_claim/bin/pip-audit --cache-dir ./.cache
+venv_claim/bin/python -m pytest --cov=. --cov-report=term --cov-report=html
+```
+
+### Tests + coverage
+```
+pytest --cov=. --cov-report=term --cov-report=html
+```
+Coverage HTML will be in `htmlcov/index.html`.
+
 ## Usage
 1. In the web UI, upload a synthetic Excel file (see `sample_data/sample_claims.xlsx`).
 2. The app masks PII, shows a sanitized preview, and processes rows one-by-one with live progress.

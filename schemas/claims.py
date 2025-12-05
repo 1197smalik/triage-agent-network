@@ -4,7 +4,6 @@ Dataclasses for FNOL and claim assessment aligned to knowledge_base/json/KB-FNOL
 """
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Any, Dict
 from datetime import datetime

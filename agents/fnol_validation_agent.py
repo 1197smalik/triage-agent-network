@@ -16,10 +16,12 @@ def validate_fnol_package(fnol: dict, retrieved: list) -> dict:
     fnol["coverage_indicator"] = coverage
     fnol["requires_manual_review"] = True if issues or coverage=="unknown" else False
     # add synthetic severity
-    desc = fnol.get("incident_description","").lower()
+    desc = fnol.get("incident_description", "").lower()
     severity = 0.5
-    if "minor" in desc or "scratch" in desc: severity = 0.2
-    if "collision" in desc or "airbag" in desc: severity = 0.7
+    if "minor" in desc or "scratch" in desc:
+        severity = 0.2
+    if "collision" in desc or "airbag" in desc:
+        severity = 0.7
     fnol["severity_score"] = round(severity,2)
     logger.info("Validation agent completed; coverage=%s severity=%.2f issues=%s", coverage, severity, issues)
     return fnol

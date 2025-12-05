@@ -14,16 +14,14 @@ import logging
 import os
 import json
 import uuid
-from datetime import datetime
 import requests
 import traceback
 from typing import Dict, Any, Tuple, List
 
-from .rag_simple import retrieve_relevant_snips, retrieve_rules_for_fnol
-from .validators import validate_fnol_schema, run_basic_checks
+from .rag_simple import retrieve_rules_for_fnol
+from .validators import run_basic_checks
 from schemas.claims import (
     FNOL,
-    ClaimAssessment,
     fnol_from_row,
     default_claim_assessment,
     validate_claim_assessment_dict,

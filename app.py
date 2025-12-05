@@ -297,7 +297,7 @@ if uploaded_file:
                                 fallback = out.get("fallback", {})
                                 if isinstance(fallback, dict):
                                     st.write("Fallback summary:", fallback.get("summary", "n/a"))
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to process file via Streamlit app.")
         st.error("⚠️ Failed to process file. Full traceback below:")
         st.code(traceback.format_exc())
