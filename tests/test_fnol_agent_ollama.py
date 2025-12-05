@@ -1,9 +1,6 @@
 import json
 
-import pytest
-
 from agents import fnol_agent_ollama
-from schemas.claims import default_claim_assessment
 
 
 def test_generate_fnol_ollama_uses_mock_llm(monkeypatch):

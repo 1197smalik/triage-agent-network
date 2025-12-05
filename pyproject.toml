@@ -1,0 +1,33 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [
+    ".venv",
+    "venv_claim",
+    "__pycache__",
+    "rag/data",
+]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E402", "E501"]
+
+[tool.mypy]
+ignore_missing_imports = true
+disallow_untyped_calls = false
+follow_imports = "silent"
+warn_unused_ignores = false
+pretty = true
+exclude = "venv_claim"
+
+[[tool.mypy.overrides]]
+module = [
+    "agents.*",
+    "schemas.*",
+    "streamlit_app.*",
+    "services.*",
+    "rag.*",
+    "app",
+    "tests.*"
+]
+ignore_errors = true

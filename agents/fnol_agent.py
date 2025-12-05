@@ -14,13 +14,12 @@ import json
 import uuid
 import subprocess
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 # RAG store from scaffold
 from rag.vectorstore import SimpleVectorStore
 
 # basic validators from scaffold
-from streamlit_app.utils.validator import validate_row
 
 logger = logging.getLogger(__name__)
 

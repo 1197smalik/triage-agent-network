@@ -1,7 +1,6 @@
 # agents/fnol_extraction_agent.py
 import logging
 import uuid
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +12,12 @@ def extract_fnol_from_row(row: dict) -> dict:
     itime = row.get("incident_time")
     try:
         # attempt parse (some Excel formats)
-        itime_iso = str(itime) if isinstance(itime, str) else itime.isoformat()
+        if isinstance(itime, str):
+            itime_iso = itime
+        elif itime is None:
+            itime_iso = ""
+        else:
+            itime_iso = itime.isoformat()
     except Exception:
         itime_iso = ""
     fnol = {

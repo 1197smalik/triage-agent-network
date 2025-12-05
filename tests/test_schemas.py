@@ -1,5 +1,3 @@
-import pytest
-
 from schemas.claims import (
     fnol_from_row,
     default_claim_assessment,

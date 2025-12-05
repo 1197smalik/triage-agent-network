@@ -1,7 +1,6 @@
 # services/storage_service.py
 # POC local storage helper (no PII saved)
 import logging
-import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
