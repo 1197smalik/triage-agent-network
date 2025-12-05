@@ -10,7 +10,7 @@ from schemas.claims import default_claim_assessment
 from streamlit_app.utils.excel_parser import parse_excel_to_df
 from streamlit_app.utils.pii_sanitizer import mask_pii_df
 from streamlit_app.utils.validator import assign_policy_tags
-from agents.fnol_agent_ollama import generate_fnol_ollama
+from core.use_cases import process_row
 
 
 logging.basicConfig(
@@ -90,6 +90,88 @@ def _render_nav_view():
         _clear_nav_view()
     st.stop()
 
+
+def _render_rows(rows, results_container, existing=False):
+    for idx, out in enumerate(rows):
+        with results_container:
+            fnol_data = out.get("fnol_package") or {}
+            if fnol_data:
+                sid = fnol_data.get("session_id", "n/a")
+                ca = out.get("claim_assessment") or default_claim_assessment(sid).to_dict()
+                claim_ref = ca.get("claim_reference_id", sid)
+                eligibility = ca.get("eligibility", "?")
+                fraud_risk = ca.get("fraud_risk_level", "?")
+                severity_val = (ca.get("damage_summary") or {}).get("severity", "")
+                severity = severity_val.lower() if isinstance(severity_val, str) else ""
+                color_map = {
+                    "high": "red",
+                    "severe": "red",
+                    "medium": "darkorange",
+                    "moderate": "darkorange",
+                    "low": "gold"
+                }
+                sev_color = color_map.get(severity, "inherit")
+                severity_text = f"<span style='color:{sev_color}; font-weight:600'>{severity.title() if severity else 'Unknown'}</span>"
+                process_ready = (
+                    ca.get("eligibility") == "Approved"
+                    and not ca.get("required_followups")
+                    and not fnol_data.get("requires_manual_review")
+                    and out.get("verification", {}).get("passed", False)
+                )
+                row_number = idx + 1
+                duration = out.get("_duration_s")
+                duration_text = f" | {duration:.1f}s" if isinstance(duration, (int, float)) else ""
+                summary_label = f"Row {row_number} — Ref {claim_ref} | Eligibility: {eligibility} | Fraud: {fraud_risk} | Severity: {severity.title() if severity else 'Unknown'}{duration_text}"
+                row_container = st.container()
+                if process_ready:
+                    row_container.markdown("<div style='background-color:#e8f5e9; padding:8px; border-radius:6px;'>", unsafe_allow_html=True)
+                with row_container.expander(summary_label, expanded=False):
+                    st.markdown(f"Severity: {severity_text}", unsafe_allow_html=True)
+                    st.write(f"Summary: {out.get('summary', '(no summary provided)')}")
+                    st.write(f"Eligibility reason: {ca.get('eligibility_reason', 'n/a')}")
+                    st.write(f"Fraud risk: {fraud_risk}")
+                    rec_action = ca.get("recommendation", {}).get("action", "")
+                    btn_label = "Process Claim" if rec_action == "Proceed_With_Claim" and not fnol_data.get("requires_manual_review") else "Review Claim"
+                    st.button(
+                        btn_label,
+                        key=f"claim-action-prev-{idx}" if existing else f"claim-action-{idx}",
+                        on_click=_go_to_detail,
+                        args=("process" if "Process" in btn_label else "review", out, idx),
+                    )
+                    st.write(f"Required followups: {', '.join(_stringify_list(ca.get('required_followups')))}")
+                    st.write(f"Fraud flags: {', '.join(_stringify_list(ca.get('fraud_flags')))}")
+                    st.write(f"Coverage applicable: {', '.join(_stringify_list(ca.get('coverage_applicable')))}")
+                    st.write(f"Excluded reasons: {', '.join(_stringify_list(ca.get('excluded_reasons')))}")
+                    st.write(f"Recommendation: {ca.get('recommendation', {}).get('action', 'n/a')} — {ca.get('recommendation', {}).get('notes_for_handler', '')}")
+                    with st.expander("More details", expanded=False):
+                        policy = fnol_data.get("policy") if isinstance(fnol_data.get("policy"), dict) else {}
+                        policy_cov = policy.get("coverage_type") or fnol_data.get("policy_coverage_type") or "n/a"
+                        policy_addons = policy.get("addons") if isinstance(policy, dict) else []
+                        st.write(f"Incident time: {fnol_data.get('incident_time', 'n/a')}")
+                        st.write(f"Incident location: {fnol_data.get('incident_location', 'n/a')}")
+                        st.write(f"Damage regions: {', '.join(fnol_data.get('damage_regions', []) or ['n/a'])}")
+                        st.write(f"Missing fields: {', '.join(fnol_data.get('missing_fields', []) or ['None'])}")
+                        st.write(f"Coverage indicator: {fnol_data.get('coverage_indicator', 'n/a')}")
+                        st.write(f"Policy coverage type: {policy_cov}")
+                        st.write(f"Policy addons: {', '.join(policy_addons or []) or 'n/a'}")
+                        st.write(f"Manual review: {fnol_data.get('requires_manual_review', False)}")
+                        st.write(f"Confidence: {out.get('confidence', 'n/a')}")
+                        st.write(f"Verification passed: {out.get('verification', {}).get('passed', 'n/a')}")
+                        st.write(f"Cited docs: {len(fnol_data.get('cited_docs', []) or [])}")
+                if process_ready:
+                    row_container.markdown("</div>", unsafe_allow_html=True)
+            else:
+                sid = out.get("session_id", "n/a")
+                row_number = idx + 1
+                label = f"Row {row_number} — error (session {sid})"
+                with st.expander(label, expanded=False):
+                    st.warning(out.get("error", "Unknown error"))
+                    if out.get("reason"):
+                        st.write(f"Reason: {out.get('reason')}")
+                    fallback = out.get("fallback", {})
+                    if isinstance(fallback, dict):
+                        st.write("Fallback summary:", fallback.get("summary", "n/a"))
+
 st.set_page_config(page_title="FNOL Intake Assistant (POC)", layout="wide")
 st.title("🚗 FNOL Intake Assistant — Streamlit POC (PII masked)")
 
@@ -132,86 +214,13 @@ if uploaded_file:
                 logger.info("Processing row %d for session build.", idx)
                 row_start = datetime.now()
                 status_box.info(f"Processing row {idx+1} of {total}...")
-                out = generate_fnol_ollama(r)
+                out = process_row(r)
                 row_duration = (datetime.now() - row_start).total_seconds()
+                out["_duration_s"] = row_duration
                 results.append(out)
 
                 # update UI incrementally
-                with results_container:
-                    fnol_data = out.get("fnol_package") or {}
-                    if fnol_data:
-                        sid = fnol_data.get("session_id", "n/a")
-                        ca = out.get("claim_assessment") or default_claim_assessment(sid).to_dict()
-                        claim_ref = ca.get("claim_reference_id", sid)
-                        eligibility = ca.get("eligibility", "?")
-                        fraud_risk = ca.get("fraud_risk_level", "?")
-                        severity_val = (ca.get("damage_summary") or {}).get("severity", "")
-                        severity = severity_val.lower() if isinstance(severity_val, str) else ""
-                        color_map = {
-                            "high": "red",
-                            "severe": "red",
-                            "medium": "darkorange",
-                            "moderate": "darkorange",
-                            "low": "gold"
-                        }
-                        sev_color = color_map.get(severity, "inherit")
-                        severity_text = f"<span style='color:{sev_color}; font-weight:600'>{severity.title() if severity else 'Unknown'}</span>"
-
-                        process_ready = (
-                            ca.get("eligibility") == "Approved"
-                            and not ca.get("required_followups")
-                            and not fnol_data.get("requires_manual_review")
-                            and out.get("verification", {}).get("passed", False)
-                        )
-
-                        row_number = idx + 1
-                        summary_label = f"Row {row_number} — Ref {claim_ref} | Eligibility: {eligibility} | Fraud: {fraud_risk} | Severity: {severity.title() if severity else 'Unknown'} | {row_duration:.1f}s"
-                        row_container = st.container()
-                        if process_ready:
-                            row_container.markdown("<div style='background-color:#e8f5e9; padding:8px; border-radius:6px;'>", unsafe_allow_html=True)
-                        with row_container.expander(summary_label, expanded=False):
-                            st.markdown(f"Severity: {severity_text}", unsafe_allow_html=True)
-                            st.write(f"Summary: {out.get('summary', '(no summary provided)')}")
-                            st.write(f"Eligibility reason: {ca.get('eligibility_reason', 'n/a')}")
-                            st.write(f"Fraud risk: {fraud_risk}")
-                            rec_action = ca.get("recommendation", {}).get("action", "")
-                            btn_label = "Process Claim" if rec_action == "Proceed_With_Claim" and not fnol_data.get("requires_manual_review") else "Review Claim"
-                            st.button(btn_label, key=f"claim-action-{idx}", on_click=_go_to_detail, args=("process" if "Process" in btn_label else "review", out, idx))
-                            st.write(f"Required followups: {', '.join(_stringify_list(ca.get('required_followups')))}")
-                            st.write(f"Fraud flags: {', '.join(_stringify_list(ca.get('fraud_flags')))}")
-                            st.write(f"Coverage applicable: {', '.join(_stringify_list(ca.get('coverage_applicable')))}")
-                            st.write(f"Excluded reasons: {', '.join(_stringify_list(ca.get('excluded_reasons')))}")
-                            st.write(f"Recommendation: {ca.get('recommendation', {}).get('action', 'n/a')} — {ca.get('recommendation', {}).get('notes_for_handler', '')}")
-                            with st.expander("More details", expanded=False):
-                                policy = fnol_data.get("policy") if isinstance(fnol_data.get("policy"), dict) else {}
-                                policy_cov = policy.get("coverage_type") or fnol_data.get("policy_coverage_type") or "n/a"
-                                policy_addons = policy.get("addons") if isinstance(policy, dict) else []
-                                st.write(f"Incident time: {fnol_data.get('incident_time', 'n/a')}")
-                                st.write(f"Incident location: {fnol_data.get('incident_location', 'n/a')}")
-                                st.write(f"Damage regions: {', '.join(fnol_data.get('damage_regions', []) or ['n/a'])}")
-                                st.write(f"Missing fields: {', '.join(fnol_data.get('missing_fields', []) or ['None'])}")
-                                st.write(f"Coverage indicator: {fnol_data.get('coverage_indicator', 'n/a')}")
-                                st.write(f"Policy coverage type: {policy_cov}")
-                                st.write(f"Policy addons: {', '.join(policy_addons or []) or 'n/a'}")
-                                st.write(f"Manual review: {fnol_data.get('requires_manual_review', False)}")
-                                st.write(f"Confidence: {out.get('confidence', 'n/a')}")
-                                st.write(f"Verification passed: {out.get('verification', {}).get('passed', 'n/a')}")
-                                st.write(f"Cited docs: {len(fnol_data.get('cited_docs', []) or [])}")
-                            st.markdown("**Raw JSON**")
-                            st.json(out, expanded=False)
-                        if process_ready:
-                            row_container.markdown("</div>", unsafe_allow_html=True)
-                    else:
-                        sid = out.get("session_id", "n/a")
-                        row_number = idx + 1
-                        label = f"Row {row_number} — error (session {sid})"
-                        with st.expander(label, expanded=False):
-                            st.warning(out.get("error", "Unknown error"))
-                            if out.get("reason"):
-                                st.write(f"Reason: {out.get('reason')}")
-                            fallback = out.get("fallback", {})
-                            if isinstance(fallback, dict):
-                                st.write("Fallback summary:", fallback.get("summary", "n/a"))
+                _render_rows([out], results_container)
                 progress.progress((idx + 1) / total, text=f"Processing {idx+1}/{total}")
 
             logger.info("FNOL processing complete; %d rows.", len(results))
@@ -223,80 +232,8 @@ if uploaded_file:
             if st.session_state.get("fnol_results"):
                 st.info("Showing previously processed results.")
                 rows = st.session_state["fnol_results"]
-                total = len(rows)
                 results_container = st.container()
-                for idx, out in enumerate(rows):
-                    with results_container:
-                        fnol_data = out.get("fnol_package") or {}
-                        if fnol_data:
-                            sid = fnol_data.get("session_id", "n/a")
-                            ca = out.get("claim_assessment") or default_claim_assessment(sid).to_dict()
-                            claim_ref = ca.get("claim_reference_id", sid)
-                            eligibility = ca.get("eligibility", "?")
-                            fraud_risk = ca.get("fraud_risk_level", "?")
-                            severity_val = (ca.get("damage_summary") or {}).get("severity", "")
-                            severity = severity_val.lower() if isinstance(severity_val, str) else ""
-                            color_map = {
-                                "high": "red",
-                                "severe": "red",
-                                "medium": "darkorange",
-                                "moderate": "darkorange",
-                                "low": "gold"
-                            }
-                            sev_color = color_map.get(severity, "inherit")
-                            severity_text = f"<span style='color:{sev_color}; font-weight:600'>{severity.title() if severity else 'Unknown'}</span>"
-                            process_ready = (
-                                ca.get("eligibility") == "Approved"
-                                and not ca.get("required_followups")
-                                and not fnol_data.get("requires_manual_review")
-                                and out.get("verification", {}).get("passed", False)
-                            )
-                            row_number = idx + 1
-                            summary_label = f"Row {row_number} — Ref {claim_ref} | Eligibility: {eligibility} | Fraud: {fraud_risk} | Severity: {severity.title() if severity else 'Unknown'}"
-                            row_container = st.container()
-                            if process_ready:
-                                row_container.markdown("<div style='background-color:#e8f5e9; padding:8px; border-radius:6px;'>", unsafe_allow_html=True)
-                            with row_container.expander(summary_label, expanded=False):
-                                st.markdown(f"Severity: {severity_text}", unsafe_allow_html=True)
-                                st.write(f"Summary: {out.get('summary', '(no summary provided)')}")
-                                st.write(f"Eligibility reason: {ca.get('eligibility_reason', 'n/a')}")
-                                st.write(f"Fraud risk: {fraud_risk}")
-                                rec_action = ca.get("recommendation", {}).get("action", "")
-                                btn_label = "Process Claim" if rec_action == "Proceed_With_Claim" and not fnol_data.get("requires_manual_review") else "Review Claim"
-                                st.button(btn_label, key=f"claim-action-prev-{idx}", on_click=_go_to_detail, args=("process" if "Process" in btn_label else "review", out, idx))
-                                st.write(f"Required followups: {', '.join(_stringify_list(ca.get('required_followups')))}")
-                                st.write(f"Fraud flags: {', '.join(_stringify_list(ca.get('fraud_flags')))}")
-                                st.write(f"Coverage applicable: {', '.join(_stringify_list(ca.get('coverage_applicable')))}")
-                                st.write(f"Excluded reasons: {', '.join(_stringify_list(ca.get('excluded_reasons')))}")
-                                st.write(f"Recommendation: {ca.get('recommendation', {}).get('action', 'n/a')} — {ca.get('recommendation', {}).get('notes_for_handler', '')}")
-                                with st.expander("More details", expanded=False):
-                                    policy = fnol_data.get("policy") if isinstance(fnol_data.get("policy"), dict) else {}
-                                    policy_cov = policy.get("coverage_type") or fnol_data.get("policy_coverage_type") or "n/a"
-                                    policy_addons = policy.get("addons") if isinstance(policy, dict) else []
-                                    st.write(f"Incident time: {fnol_data.get('incident_time', 'n/a')}")
-                                    st.write(f"Incident location: {fnol_data.get('incident_location', 'n/a')}")
-                                    st.write(f"Damage regions: {', '.join(fnol_data.get('damage_regions', []) or ['n/a'])}")
-                                    st.write(f"Missing fields: {', '.join(fnol_data.get('missing_fields', []) or ['None'])}")
-                                    st.write(f"Coverage indicator: {fnol_data.get('coverage_indicator', 'n/a')}")
-                                    st.write(f"Policy coverage type: {policy_cov}")
-                                    st.write(f"Policy addons: {', '.join(policy_addons or []) or 'n/a'}")
-                                    st.write(f"Manual review: {fnol_data.get('requires_manual_review', False)}")
-                                    st.write(f"Confidence: {out.get('confidence', 'n/a')}")
-                                    st.write(f"Verification passed: {out.get('verification', {}).get('passed', 'n/a')}")
-                                    st.write(f"Cited docs: {len(fnol_data.get('cited_docs', []) or [])}")
-                            if process_ready:
-                                row_container.markdown("</div>", unsafe_allow_html=True)
-                        else:
-                            sid = out.get("session_id", "n/a")
-                            row_number = idx + 1
-                            label = f"Row {row_number} — error (session {sid})"
-                            with st.expander(label, expanded=False):
-                                st.warning(out.get("error", "Unknown error"))
-                                if out.get("reason"):
-                                    st.write(f"Reason: {out.get('reason')}")
-                                fallback = out.get("fallback", {})
-                                if isinstance(fallback, dict):
-                                    st.write("Fallback summary:", fallback.get("summary", "n/a"))
+                _render_rows(rows, results_container, existing=True)
     except Exception:
         logger.exception("Failed to process file via Streamlit app.")
         st.error("⚠️ Failed to process file. Full traceback below:")

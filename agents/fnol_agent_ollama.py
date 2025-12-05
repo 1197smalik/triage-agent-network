@@ -154,7 +154,7 @@ def _fallback_fnol(claim: dict, snips: list[str]):
     return {"fnol_package": fnol, "claim_assessment": assessment, "summary": "(fallback) generated", "confidence": 0.75}
 
 # Main function exposed to orchestrator
-def generate_fnol_ollama(sanitized_row: dict):
+def generate_fnol_ollama(sanitized_row: dict, rag_client=None):
     """
     sanitized_row: dict with tokenized PII and incident_description.
     Returns: dict. On success returns:
@@ -182,7 +182,10 @@ def generate_fnol_ollama(sanitized_row: dict):
 
     # 1) RAG retrieval
     try:
-        rule_chunks = retrieve_rules_for_fnol(fnol_obj, top_k=8)
+        if rag_client:
+            rule_chunks = rag_client.retrieve_rules_for_fnol(fnol_obj, top_k=8)
+        else:
+            rule_chunks = retrieve_rules_for_fnol(fnol_obj, top_k=8)
         logger.info("Retrieved %d RAG rule chunks for session_id=%s", len(rule_chunks), session)
     except Exception:
         logger.exception("RAG retrieval failed; using defaults.")
